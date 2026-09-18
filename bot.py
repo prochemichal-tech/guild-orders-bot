@@ -6,7 +6,7 @@ from discord.ext import commands
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 DB_PATH = os.getenv('DB_PATH', '/data/orders.db')
-WEEKLY_POINT_LIMIT = int(os.getenv('WEEKLY_POINT_LIMIT', '200'))
+WEEKLY_POINT_LIMIT = int(os.getenv('WEEKLY_POINT_LIMIT', '20'))
 if not TOKEN:
     raise RuntimeError('Chybí proměnná DISCORD_TOKEN.')
 os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
@@ -517,6 +517,28 @@ async def items(interaction: discord.Interaction):
     for r in rows:
         lines.append(f"**#{r['id']:03d}** • <@{r['player_id']}> • {r['item']} × {r['quantity']} • {r['reason']}")
     await interaction.response.send_message(embed=discord.Embed(title='📋 GB ITEM LOG', description='\n'.join(lines), color=discord.Color.blurple()), ephemeral=True)
+
+@bot.tree.command(name='points_all', description='Vedení: ukáže týdenní body všech hráčů')
+async def points_all(interaction: discord.Interaction):
+    if not is_staff(interaction.user):
+        return await interaction.response.send_message('❌ Tento přehled může zobrazit pouze důstojník / vedení.', ephemeral=True)
+    start = _week_start_utc().isoformat()
+    c = db()
+    rows = c.execute("""SELECT claimer_id, COALESCE(SUM(reward),0) AS total FROM orders
+        WHERE guild_id=? AND claimer_id IS NOT NULL
+        AND status IN ('CLAIMED','PENDING_REVIEW','COMPLETED')
+        AND ((status='COMPLETED' AND reviewed_at>=?) OR (status!='COMPLETED' AND claimed_at>=?))
+        GROUP BY claimer_id ORDER BY total DESC""", (interaction.guild_id,start,start)).fetchall()
+    c.close()
+    if not rows:
+        return await interaction.response.send_message(f'📊 Tento týden zatím nikdo nemá body. Limit je **{WEEKLY_POINT_LIMIT}**.', ephemeral=True)
+    lines=[]
+    for r in rows:
+        m=interaction.guild.get_member(r['claimer_id'])
+        name=m.display_name if m else f'ID {r["claimer_id"]}'
+        used=int(r['total'] or 0); remaining=max(0,WEEKLY_POINT_LIMIT-used)
+        lines.append(f'**{name}** — **{used}/{WEEKLY_POINT_LIMIT}** • zbývá **{remaining}**')
+    await interaction.response.send_message(embed=discord.Embed(title='📊 Týdenní body hráčů',description='\n'.join(lines)[:4000],color=discord.Color.blurple()),ephemeral=True)
 
 @bot.tree.command(name='points', description='Ukáže tvůj týdenní stav bodů z orderů')
 async def points(interaction: discord.Interaction):
