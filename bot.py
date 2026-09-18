@@ -33,13 +33,23 @@ def init_db():
         cancelled_at TEXT,
         reviewed_by INTEGER,
         reviewed_at TEXT,
-        guild_slot INTEGER
+        guild_slot INTEGER,
+        control_slot INTEGER
     )''')
     # Migration for an existing V1 database.
     cols = {r['name'] for r in c.execute('PRAGMA table_info(orders)').fetchall()}
-    for name, typ in [('reviewed_by', 'INTEGER'), ('reviewed_at', 'TEXT'), ('guild_slot', 'INTEGER')]:
+    for name, typ in [('reviewed_by', 'INTEGER'), ('reviewed_at', 'TEXT'), ('guild_slot', 'INTEGER'), ('control_slot', 'INTEGER')]:
         if name not in cols:
             c.execute(f'ALTER TABLE orders ADD COLUMN {name} {typ}')
+    c.execute('''CREATE TABLE IF NOT EXISTS items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_id INTEGER NOT NULL,
+        item TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        created_by INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    )''')
     c.commit()
     c.close()
 
@@ -103,10 +113,12 @@ async def embed_for(g, o):
         e.add_field(name='Guild slot', value=f'#{o["guild_slot"]}', inline=True)
     if o['status'] == 'COMPLETED' and o['reviewed_by']:
         e.add_field(name='Schválil', value=await uname(g, o['reviewed_by']), inline=True)
+    if o['control_slot']:
+        e.add_field(name='Kontrolní slot', value=f'#{o["control_slot"]}', inline=True)
     e.set_footer(text='Guild Orders • body se zatím připisují ručně')
     return e
 
-def update_status(i, status, uid=None, reviewer=None, guild_slot=None):
+def update_status(i, status, uid=None, reviewer=None, guild_slot=None, control_slot=None):
     c = db(); now = datetime.now(timezone.utc).isoformat()
     if status == 'CLAIMED':
         cur = c.execute("UPDATE orders SET claimer_id=?,status='CLAIMED',claimed_at=? WHERE id=? AND status='OPEN'", (uid, now, i))
@@ -115,7 +127,7 @@ def update_status(i, status, uid=None, reviewer=None, guild_slot=None):
     elif status == 'PENDING_REVIEW':
         cur = c.execute("UPDATE orders SET status='PENDING_REVIEW',completed_at=?,guild_slot=? WHERE id=? AND status='CLAIMED' AND claimer_id=?", (now, guild_slot, i, uid))
     elif status == 'COMPLETED':
-        cur = c.execute("UPDATE orders SET status='COMPLETED',reviewed_by=?,reviewed_at=? WHERE id=? AND status='PENDING_REVIEW'", (reviewer, now, i))
+        cur = c.execute("UPDATE orders SET status='COMPLETED',reviewed_by=?,reviewed_at=?,control_slot=? WHERE id=? AND status='PENDING_REVIEW'", (reviewer, now, control_slot, i))
     elif status == 'CLAIMED_FROM_REVIEW':
         cur = c.execute("UPDATE orders SET status='CLAIMED' WHERE id=? AND status='PENDING_REVIEW'", (i,))
     else:
@@ -128,8 +140,8 @@ class GuildSlotView(discord.ui.View):
         super().__init__(timeout=120)
         self.order_id = order_id
         self.user_id = user_id
-        options = [discord.SelectOption(label=f'Guild slot {i}', value=str(i)) for i in range(1, 9)]
-        select = discord.ui.Select(placeholder='Vyber guild slot 1–8', options=options, custom_id=f'guildorder:slot:{order_id}')
+        options = [discord.SelectOption(label=f'Guild slot {i}', value=str(i)) for i in range(1, 3)]
+        select = discord.ui.Select(placeholder='Vyber guild slot 1–2', options=options, custom_id=f'guildorder:slot:{order_id}')
         async def callback(interaction):
             if interaction.user.id != self.user_id:
                 return await interaction.response.send_message('❌ Tento výběr patří hráči, který order vyřizuje.', ephemeral=True)
@@ -141,6 +153,30 @@ class GuildSlotView(discord.ui.View):
             channel = interaction.channel
             try:
                 msg = await channel.fetch_message(o['message_id'])
+                await msg.edit(embed=await embed_for(interaction.guild, o), view=OrderView(self.order_id))
+            except Exception:
+                pass
+            self.stop()
+        select.callback = callback
+        self.add_item(select)
+
+class ControlSlotView(discord.ui.View):
+    def __init__(self, order_id, reviewer_id):
+        super().__init__(timeout=120)
+        self.order_id = order_id
+        self.reviewer_id = reviewer_id
+        options = [discord.SelectOption(label=f'Kontrolní slot {i}', value=str(i)) for i in range(1, 9)]
+        select = discord.ui.Select(placeholder='Vyber kontrolní slot 1–8', options=options, custom_id=f'guildorder:controlslot:{order_id}')
+        async def callback(interaction):
+            if interaction.user.id != self.reviewer_id:
+                return await interaction.response.send_message('❌ Tento výběr patří důstojníkovi / vedení, které kontrolu spustilo.', ephemeral=True)
+            slot = int(select.values[0])
+            if not update_status(self.order_id, 'COMPLETED', reviewer=interaction.user.id, control_slot=slot):
+                return await interaction.response.edit_message(content='❌ Order už není ve stavu ČEKÁ NA KONTROLU.', view=None)
+            o = get_order(self.order_id)
+            await interaction.response.edit_message(content=f'✅ Order potvrzen. Kontrolní slot: **#{slot}**. Body lze nyní ručně doplnit.', view=None)
+            try:
+                msg = await interaction.channel.fetch_message(o['message_id'])
                 await msg.edit(embed=await embed_for(interaction.guild, o), view=OrderView(self.order_id))
             except Exception:
                 pass
@@ -197,9 +233,9 @@ class OrderView(discord.ui.View):
     async def approve(self, interaction):
         if not is_staff(interaction.user):
             return await interaction.response.send_message('❌ Potvrdit splnění a udělit body může pouze důstojník / vedení.', ephemeral=True)
-        if not update_status(self.i, 'COMPLETED', reviewer=interaction.user.id):
-            return await interaction.response.send_message('❌ Order už není ve stavu ČEKÁ NA KONTROLU.', ephemeral=True)
-        await self.redraw(interaction)
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message('❌ Potvrdit splnění může pouze důstojník / vedení.', ephemeral=True)
+        await interaction.response.send_message('📋 Do kterého kontrolního slotu důstojník / vedení order přeřadilo?', view=ControlSlotView(self.i, interaction.user.id), ephemeral=True)
 
     async def return_to_claimed(self, interaction):
         if not is_staff(interaction.user):
@@ -215,6 +251,13 @@ class OrderView(discord.ui.View):
         if not update_status(self.i, 'CANCELLED'):
             return await interaction.response.send_message('❌ Objednávku už nelze zrušit.', ephemeral=True)
         await self.redraw(interaction)
+
+def create_item_log(player_id, item, quantity, reason, created_by):
+    c = db()
+    cur = c.execute('INSERT INTO items(player_id,item,quantity,reason,created_by,created_at) VALUES(?,?,?,?,?,?)',
+                    (player_id, item, quantity, reason, created_by, datetime.now(timezone.utc).isoformat()))
+    i = cur.lastrowid
+    c.commit(); c.close(); return i
 
 class Bot(commands.Bot):
     def __init__(self):
@@ -233,6 +276,34 @@ class Bot(commands.Bot):
         print(f'Guild Orders online: {self.user} ({self.user.id})')
 
 bot = Bot()
+
+@bot.tree.command(name='item', description='Ruční zápis vydaného guild itemu hráči')
+@app_commands.describe(player='Hráč, který item dostal', item='Název itemu', quantity='Počet kusů', reason='Proč hráč item dostal')
+async def item(interaction: discord.Interaction, player: discord.Member, item: str, quantity: int, reason: str):
+    if not is_staff(interaction.user):
+        return await interaction.response.send_message('❌ Tento zápis může dělat pouze důstojník / vedení.', ephemeral=True)
+    if quantity < 1 or not item.strip() or len(item) > 200 or not reason.strip() or len(reason) > 500:
+        return await interaction.response.send_message('❌ Zkontroluj item, počet kusů a důvod.', ephemeral=True)
+    item_id = create_item_log(player.id, item.strip(), quantity, reason.strip(), interaction.user.id)
+    e = discord.Embed(title=f'🎁 GB ITEM #{item_id:03d}', color=discord.Color.blurple())
+    e.add_field(name='Hráč', value=player.mention, inline=True)
+    e.add_field(name='Item', value=item.strip(), inline=True)
+    e.add_field(name='Kusů', value=str(quantity), inline=True)
+    e.add_field(name='Důvod', value=reason.strip(), inline=False)
+    e.add_field(name='Zapsal', value=interaction.user.mention, inline=True)
+    await interaction.response.send_message(embed=e)
+
+@bot.tree.command(name='items', description='Zobrazí poslední ruční zápisy guild itemů')
+async def items(interaction: discord.Interaction):
+    if not is_staff(interaction.user):
+        return await interaction.response.send_message('❌ Tento přehled může zobrazit pouze důstojník / vedení.', ephemeral=True)
+    c = db(); rows = c.execute('SELECT * FROM items ORDER BY id DESC LIMIT 20').fetchall(); c.close()
+    if not rows:
+        return await interaction.response.send_message('📭 Zatím nejsou žádné ruční zápisy itemů.', ephemeral=True)
+    lines=[]
+    for r in rows:
+        lines.append(f"**#{r['id']:03d}** • <@{r['player_id']}> • {r['item']} × {r['quantity']} • {r['reason']}")
+    await interaction.response.send_message(embed=discord.Embed(title='📋 GB ITEM LOG', description='\n'.join(lines), color=discord.Color.blurple()), ephemeral=True)
 
 @bot.tree.command(name='order', description='Vytvoří novou guild objednávku')
 @app_commands.describe(item='Název předmětu', quantity='Počet kusů', reward='Odměna v guild pointech')
