@@ -163,7 +163,7 @@ async def embed_for(g, o):
     e = discord.Embed(title=f"📦 ORDER #{o['id']:03d}", color=col)
     e.add_field(name='Předmět', value=o['item'], inline=False)
     e.add_field(name='Množství', value=str(o['quantity']), inline=True)
-    e.add_field(name='Odměna', value=f"**{o['reward']} bodů**", inline=True)
+    e.add_field(name='Odměna', value=f"**{o['reward']} EP**", inline=True)
     e.add_field(name='Stav', value=status_text(o['status']), inline=False)
     e.add_field(name='Zadal', value=await uname(g, o['creator_id']), inline=True)
     if o['claimer_id']:
@@ -338,7 +338,7 @@ class OrderView(discord.ui.View):
         if used + o['reward'] > WEEKLY_POINT_LIMIT:
             return await interaction.response.send_message(
                 f'❌ Tento order nemůžeš vzít. Tento týden máš získáno nebo rezervováno '
-                f'**{used}/{WEEKLY_POINT_LIMIT} bodů** a tento order je za **{o["reward"]} bodů**. '
+                f'**{used}/{WEEKLY_POINT_LIMIT} EP** a tento order je za **{o["reward"]} EP**. '
                 f'Překročil bys týdenní limit.',
                 ephemeral=True
             )
@@ -350,8 +350,8 @@ class OrderView(discord.ui.View):
         remaining_now = max(0, WEEKLY_POINT_LIMIT - used_now)
         try:
             await interaction.followup.send(
-                f'📊 Týdenní stav: **{used_now}/{WEEKLY_POINT_LIMIT} bodů**. '
-                f'Zbývá ti ještě **{remaining_now} bodů**.',
+                f'📊 Týdenní stav: **{used_now}/{WEEKLY_POINT_LIMIT} EP**. '
+                f'Zbývá ti ještě **{remaining_now} EP**.',
                 ephemeral=True
             )
         except Exception:
@@ -545,8 +545,8 @@ async def points(interaction: discord.Interaction):
     used = weekly_points(interaction.user.id, interaction.guild_id)
     remaining = max(0, WEEKLY_POINT_LIMIT - used)
     await interaction.response.send_message(
-        f'📊 Tento týden máš získáno nebo rezervováno **{used}/{WEEKLY_POINT_LIMIT} bodů**. '
-        f'Do limitu zbývá **{remaining} bodů**.',
+        f'📊 Tento týden máš získáno nebo rezervováno **{used}/{WEEKLY_POINT_LIMIT} EP**. '
+        f'Do limitu zbývá **{remaining} EP**.',
         ephemeral=True
     )
 
