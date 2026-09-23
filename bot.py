@@ -525,9 +525,15 @@ def create_item_log(guild_id, player_id, item, quantity, reason, created_by):
 
 class Bot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix='!', intents=discord.Intents.default())
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(command_prefix='!', intents=intents)
 
     async def setup_hook(self):
+        # Načíst samostatný modul pro potvrzení pravidel.
+        await self.load_extension('rules_verify')
+        print('Modul potvrzení pravidel načten.')
+
         # Připrav DB při každém startu.
         init_db()
         print(f'Databáze připravena: {DB_PATH}')
