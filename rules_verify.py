@@ -35,6 +35,12 @@ class RulesVerification(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.guild is None:
             return
+
+        # Zprávy vedení necháme v kanálu, aby tam mohla zůstat informační zpráva.
+        if isinstance(message.author, discord.Member):
+            if message.author.guild_permissions.manage_guild:
+                return
+                
         if not _is_rules_channel(message.channel):
             return
 
